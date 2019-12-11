@@ -1,0 +1,134 @@
+#!/bin/bash
+
+function usage() {
+    cat <<USAGE
+$(basename ${0}) is a tool for getting log from Cisco Catalyst by ssh
+
+Usage:
+    $(basename ${0}) host_ip user password host_name logDir
+    $(basename ${0}) host_ip user password host_name enable_password logDir
+USAGE
+}
+
+if [ $# -ne 5 -a $# -ne 6 ] ; then
+  echo "must be 2" 1>&2
+  echo "to run this script value should be 5 or 6" 1>&2
+  usage
+  exit 1
+fi
+
+if [ $# = 5 ] ; then
+  host=$1
+  id=$2
+  password=$3
+  hostname=`echo $4 | awk -F\. '{print $1}'`
+  logDir=$5
+elif [ $# = 6 ] ; then
+  host=$1
+  id=$2
+  password=$3
+  hostname=`echo $4 | awk -F\. '{print $1}'`
+  enablePassword=$5
+  logDir=$6
+fi
+
+### create folter ###
+
+if [ ! -e ${logDir} ]; then
+  mkdir ${logDir}
+fi
+
+#
+# Log Get Script
+#
+
+logFile="cisco_catalyst_ssh_${hostname}_`date +%Y%m%d_%H%M%S`.log"
+PROMPT="${hostname}.*>\|#"
+#EN_PROMPT="${hostname}#"
+
+result=$(expect -c "
+    set timeout 30
+    spawn ssh ${id}@${host}
+
+    expect {
+        default {exit 1}
+        -re \"Host key verification failed.\" {
+            puts [exec ssh-keygen -R ${host} > /dev/null 2>&1]
+            spawn ssh ${id}@${host}
+            exp_continue
+        }
+        -re \"Are you sure you want to continue connecting (yes/no)?\" {
+            send \"yes\n\"
+            exp_continue
+        }
+        -re \".*\[Pp\]assword:\" {
+            send \"${password}\n\"
+        }
+    }
+
+### command list ###
+
+    set com_list [ list \
+      {enable} \
+      {terminal length 0} \
+      {show clock} \
+      {show logging} \
+      {show version} \
+      {show running-config} \
+      {show interface} \
+    ]
+
+    foreach COMMAND \$com_list {
+        expect {
+            default {exit 1}
+            -re \".*\[Pp\]assword:\" {
+                send \"${enablePassword}\n\"
+                exp_continue
+            }
+            -re \"${PROMPT}\" {
+                send \"\${COMMAND}\n\"
+            }
+        }
+    }
+
+    expect {
+        default {exit 1}
+        -re \"$PROMPT\" {
+            send \"exit\n\"
+        }
+    }
+
+    expect eof
+")
+
+### expect timeout  ###
+
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+  echo "Can't get the log!!!" >> ${logDir}/${logFile}
+fi
+
+#
+# log file header
+#
+
+cat << EOF >> ${logDir}/${logFile}
+-----------------------------------------------
+This Log_file contains following commands:
+  # show clock
+  # show logging
+  # show version
+  # show running-config
+  # show interface
+-----------------------------------------------
+EOF
+
+echo -e "${result}" | sed -e 's/
+//g' >> ${logDir}/${logFile}
+
+sleep 2
+
+echo Directory:${logDir}
+
+exit 0
